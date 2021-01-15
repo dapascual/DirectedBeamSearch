@@ -160,7 +160,9 @@ def conditional_language_generation(
     number_of_beams = 3,
     number_keywords = 5,
     word_index=0,
-    save_path='dummy.txt'    
+    save_path='dummy.txt',
+    sample=False,
+    temp=1. ##TODO: in quality score
 ):
     """
     Interactively run the model
@@ -206,14 +208,14 @@ def conditional_language_generation(
     
     # line contains all sets of 5 worlds in it
     file1 = open(str(os.path.dirname(os.path.abspath(__file__))) +
-                 "/look_ups_gpt-2/glove_words_param_eval/word_sets.txt", "r+")
+                 "/data/50_keywordsets_eval/word_sets.txt", "r+")
 
     line = file1.readlines()
     keywords = list(line[word_index].strip().split(", "))
     print("Keywords: ", keywords)
 
     keywords_glove = np.load(str(os.path.dirname(
-        os.path.abspath(__file__))) + '/look_ups_gpt-2/glove_words_param_eval/set_' + str(word_index) + '.npy') 
+        os.path.abspath(__file__))) + '/data/50_keywordsets_eval/set_' + str(word_index) + '.npy') 
 
 ###################################
     from datetime import datetime
@@ -229,7 +231,7 @@ def conditional_language_generation(
 
     weight = constant
     converter_table = np.load(str(os.path.dirname(
-        os.path.abspath(__file__))) + '/look_ups_gpt-2/converter_table_glove.npy')  
+        os.path.abspath(__file__))) + '/data/converter_table_glove.npy')  
     
     
     guidance_index = [0]*number_of_beams
@@ -272,7 +274,7 @@ def conditional_language_generation(
                 perplexity = np.power(proba, (-1/length))
                 
                 counter_sim = 0
-                quality_score, word_count = evaluate_quality(this_sequence, guidance_word, counter_sim, perplexity, guide[b])
+                quality_score, word_count = evaluate_quality(this_sequence, guidance_word, counter_sim, perplexity, guide[b], temp)
                 print("Beam, Guidance: ", b, guidance_word, str(guidance_index[b]), guide[b])
                 print("txt, quality, wordC, ppl: ", this_sequence, cum_quality_score[b]+quality_score, word_count, perplexity)   
 
@@ -282,16 +284,29 @@ def conditional_language_generation(
                 perplexities[i] = perplexity            
 
 ########################################################################################################
-        
-        result_subsequences = sorted(
-            result_subsequences, key=lambda a_entry: a_entry[1], reverse=True)      
+        if not sample:
+            result_subsequences_sorted = sorted(
+                result_subsequences, key=lambda a_entry: a_entry[1], reverse=True)      
+        else:
+            scores = torch.tensor([a_entry[1] for a_entry in result_subsequences])
+            print("Scores: ", scores)
+            soft_scores = F.softmax(scores, dim=-1) 
+            print("Soft scores: ", soft_scores)
+            sampled_indeces = torch.multinomial(soft_scores, len(result_subsequences), replacement=False).tolist()
+            print("Sampled indeces: ", sampled_indeces)
+            result_subsequences_sorted = [result_subsequences[i] for i in sampled_indeces] #[element for _, element in sorted(zip(sampled_indeces, result_subsequences))]
+            print(result_subsequences_sorted[0])
+            del sampled_indeces
+            del soft_scores
+            torch.cuda.empty_cache()
+
 
         for b in range(number_of_beams):
-            full_text[b] = result_subsequences[b][0]
-            cum_quality_score[b] = result_subsequences[b][1]
-            guidance_index[b] = result_subsequences[b][5]
-            guide[b] = result_subsequences[b][6]
-            if result_subsequences[b][2] > 0: ## Word Count
+            full_text[b] = result_subsequences_sorted[b][0]
+            cum_quality_score[b] = result_subsequences_sorted[b][1]
+            guidance_index[b] = result_subsequences_sorted[b][5]
+            guide[b] = result_subsequences_sorted[b][6]
+            if result_subsequences_sorted[b][2] > 0: ## Word Count
                 guidance_index[b] += 1
                 if guidance_index[b] > number_keywords-1:
                     guide[b] = False
@@ -299,19 +314,19 @@ def conditional_language_generation(
                     success_length[b] = k+1
                     
             n_words_counter = (k+1)*number_of_words_per_sentence
-            online_probability[b] *= result_subsequences[b][4]
+            online_probability[b] *= result_subsequences_sorted[b][4]
             online_perplexity = np.power(online_probability[b], (-1/n_words_counter))
 
             print(">>>>>>>>>>>>> BEAM: ", b)
             print("Guidance words: ", keywords)
             print("Current sentence: ", full_text[b])
-            print("Guidance word, word count: ", keywords[guidance_index[b]], result_subsequences[b][2])
+            print("Guidance word, word count: ", keywords[guidance_index[b]], result_subsequences_sorted[b][2])
             print("Current perplexity, cumulative quality: ", online_perplexity, cum_quality_score[b])        
 
                   
         '''
         text_file.write("\nBest 10 next subsequences: \n")
-        for result_subsequence in result_subsequences:
+        for result_subsequence in result_subsequences_sorted:
             text_file.write(result_subsequence[0] + "\n Perplexity:" +
                             str(result_subsequence[2]) + "\n Quality Score: " +
                             str(result_subsequence[1]) + "\n\n")
@@ -402,10 +417,13 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('-weight', type=float, default=20)
     parser.add_argument('-n_concurrent_sentences', type=int, default=4)
-    parser.add_argument('-n_generated_sentences', type=int, default=20)
+    parser.add_argument('-n_generated_sentences', type=int, default=10)
     parser.add_argument('-n_words_per_sentence', type=int, default=5)
     parser.add_argument('-n_beams', type=int, default=5)
     parser.add_argument('-n_word_files', type=int, default=50)
+    parser.add_argument('-n_repetitions', type=int, default=1)
+    parser.add_argument('-sample', type=bool, default=False)
+    parser.add_argument('-temperature', type=float, default=1.)
     args = parser.parse_args()
 
     word_set_index = 0
@@ -415,15 +433,23 @@ if __name__ == '__main__':
     number_of_words_per_sentence = args.n_words_per_sentence
     number_of_beams = args.n_beams
     n_word_files = args.n_word_files
+    sample = args.sample
+    n_repetitions = args.n_repetitions
+    temperature = args.temperature
 
-    save_file = 'result_w_'+str(weight)+'_nBeams_'+str(number_of_beams)+'_nConcSent_'+str(number_of_concurrent_sentences)+'_nGenSent_'+str(number_of_generated_sentences)+'_nWordsPerSent_'+str(number_of_words_per_sentence)
-    sub_folder = 'param_evaluation/'
+    if sample == False:
+        save_file = 'deterministic_result_w_'+str(weight)+'_nBeams_'+str(number_of_beams)+'_nConcSent_'+str(number_of_concurrent_sentences)+'_nGenSent_'+str(number_of_generated_sentences)+'_nWordsPerSent_'+str(number_of_words_per_sentence)+'_temperature_'+str(temperature)
+    else:
+        save_file = 'sample_result_w_'+str(weight)+'_nBeams_'+str(number_of_beams)+'_nConcSent_'+str(number_of_concurrent_sentences)+'_nGenSent_'+str(number_of_generated_sentences)+'_nWordsPerSent_'+str(number_of_words_per_sentence)+'_temperature_'+str(temperature)
+
+    sub_folder = '50_keywordsets_eval/'
     save_path = 'results/' + sub_folder + save_file
+    #save_path = 'results/'
 
-    all_results = np.zeros([n_word_files, 10, 4])
+    all_results = np.zeros([n_word_files, n_repetitions, 4])
     # For every concept word set
     for j in range(n_word_files):
-        for i in range(10):
+        for i in range(n_repetitions):
             # Interact model => generate sentenses and evaluate them
             results = conditional_language_generation(constant=weight,
                                                       number_of_concurrent_sentences=number_of_concurrent_sentences,
@@ -431,7 +457,9 @@ if __name__ == '__main__':
                                                       number_of_words_per_sentence=number_of_words_per_sentence,
                                                       number_of_beams = number_of_beams,
                                                       word_index=j,  
-                                                      save_path=save_path           
+                                                      save_path=save_path, 
+                                                      sample=sample,
+                                                      temp=temperature        
                                                       )
             all_results[j][i][0] = results["gpt_1_perplexity"]
             all_results[j][i][1] = results["time_needed"]

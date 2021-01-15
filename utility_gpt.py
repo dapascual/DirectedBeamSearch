@@ -48,29 +48,29 @@ def checker(string):
 
 def files_exist():
     booler = os.path.exists(str(os.path.dirname(os.path.abspath(
-        __file__))) + '/look_ups_gpt-2/converter_table.npy')
+        __file__))) + '/data/converter_table.npy')
     booler = booler and os.path.exists(str(os.path.dirname(os.path.abspath(
-        __file__))) + '/look_ups_gpt-2/converter_table_glove.npy')
+        __file__))) + '/data/converter_table_glove.npy')
     booler = booler and os.path.isfile(str(os.path.dirname(
-        os.path.abspath(__file__))) + '/look_ups_gpt-2/top_ten_embeddings')
+        os.path.abspath(__file__))) + '/data/top_ten_embeddings')
     booler = booler and os.path.isfile(str(os.path.dirname(
-        os.path.abspath(__file__))) + '/look_ups_gpt-2/word_sets_num.npy')
+        os.path.abspath(__file__))) + '/data/word_sets_num.npy')
     booler = booler and os.path.isfile(str(os.path.dirname(
-        os.path.abspath(__file__))) + '/look_ups_gpt-2/word_sets.txt')
+        os.path.abspath(__file__))) + '/data/word_sets.txt')
     return booler
 
 
 def generate_look_ups(glove_encoder):
-    if not os.path.exists(str(os.path.dirname(os.path.abspath(__file__))) + '/look_ups_gpt-2/converter_table.npy'):
+    if not os.path.exists(str(os.path.dirname(os.path.abspath(__file__))) + '/data/converter_table.npy'):
         converter_table()
-    if not os.path.exists(str(os.path.dirname(os.path.abspath(__file__))) + '/look_ups_gpt-2/converter_table_glove.npy'):
+    if not os.path.exists(str(os.path.dirname(os.path.abspath(__file__))) + '/data/converter_table_glove.npy'):
         converter_table_glove(glove_encoder)
-    if not os.path.isfile(str(os.path.dirname(os.path.abspath(__file__))) + '/look_ups_gpt-2/top_ten_embeddings'):
+    if not os.path.isfile(str(os.path.dirname(os.path.abspath(__file__))) + '/data/top_ten_embeddings'):
         top_ten_embeddings()
-    if not os.path.isfile(str(os.path.dirname(os.path.abspath(__file__))) + '/look_ups_gpt-2/word_sets.txt'):
+    if not os.path.isfile(str(os.path.dirname(os.path.abspath(__file__))) + '/data/word_sets.txt'):
         print('First create a text file with top 5 words you want the generation to anchored with.')
     else:
-        if not os.path.isfile(str(os.path.dirname(os.path.abspath(__file__))) + '/look_ups_gpt-2/word_sets_num.npy'):
+        if not os.path.isfile(str(os.path.dirname(os.path.abspath(__file__))) + '/data/word_sets_num.npy'):
             word_sets()
 
 
@@ -82,10 +82,10 @@ def word_sets():
         lister.append(words[i][0][0])
 
     file1 = open(str(os.path.dirname(os.path.abspath(__file__))) +
-                 '/look_ups_gpt-2/word_sets.txt', "r+")
+                 '/data/word_sets.txt', "r+")
     length = len(file1.readlines())
     file1 = open(str(os.path.dirname(os.path.abspath(__file__))) +
-                 '/look_ups_gpt-2/word_sets.txt', "r+")
+                 '/data/word_sets.txt', "r+")
     holder = np.zeros((length, 5), dtype=int)
     for i in range(length):
         line = file1.readline()
@@ -97,13 +97,13 @@ def word_sets():
                 numb = lister.index(lines[j].strip())
             holder[i, j] = numb
     np.save(file=str(os.path.dirname(os.path.abspath(__file__))) +
-            '/look_ups_gpt-2/word_sets_num.npy', arr=holder)
+            '/data/word_sets_num.npy', arr=holder)
 
 
 # Create the misterious converter table...
 def converter_table():
     path = str(os.path.dirname(os.path.abspath(__file__))) + \
-        '/look_ups_gpt-2/converter_table'
+        '/data/converter_table'
 
     # Load glove embedings dictionary
     embeddings_dict = {}
@@ -137,7 +137,7 @@ def converter_table():
             holder[i, :] = glove
         except:
             word = enc.decode([i])
-            holder[i, :] = np.zeros((300)) + 500
+            holder[i, :] = np.zeros((300)) #+ 500
 
     # Save all 50'000 glove representations of the gpt-2 words
     np.save(file=path, arr=holder)
@@ -181,7 +181,7 @@ def converter_table_glove(glove_encoder):
     glove_encoder = api.load("glove-wiki-gigaword-300")
 
     path = str(os.path.dirname(os.path.abspath(__file__))) + \
-        '/look_ups_gpt-2/converter_table_glove'
+        '/data/converter_table_glove'
 
     # load gpt-2 model
     #model = GPT2LMHeadModel.from_pretrained('gpt2')
@@ -199,7 +199,7 @@ def converter_table_glove(glove_encoder):
             holder[i, :] = glove
         except:
             word = tokenizer.decode([i])
-            holder[i, :] = np.zeros((300)) + 500
+            holder[i, :] = np.zeros((300)) #+ 500
 
     # Save all 50'000 glove representations of the gpt-2 words
     np.save(file=path, arr=holder)
@@ -207,7 +207,7 @@ def converter_table_glove(glove_encoder):
     
 def glove_words_table(file_path, glove_encoder):
     path = str(os.path.dirname(os.path.abspath(__file__))) + \
-        '/look_ups_gpt-2/glove_words_table/'
+        '/data/glove_words_table/'
 
     file1 = open(file_path)
 	
@@ -230,7 +230,7 @@ def find_closest_embeddings_cosine_prox(embedding, embeddings_dict):
 def top_ten_embeddings():
 
     path = str(os.path.dirname(os.path.abspath(__file__))) + \
-        '/look_ups_gpt-2/top_ten_embeddings_two'
+        '/data/top_ten_embeddings_two'
 
     word = load_words()
     words = load_words_and_glove()
@@ -293,7 +293,7 @@ def load_words_and_glove():
 def load_words_and_glove_new():
 
     path = str(os.path.dirname(os.path.abspath(__file__))) + \
-        '/look_ups_gpt-2/top_ten_embeddings_two'
+        '/data/top_ten_embeddings_two'
 
     word = load_words()
     words = load_words_and_glove()
@@ -321,7 +321,7 @@ def load_words_and_glove_new():
 
 def related_words(enc):
     top_ten = pd.read_csv(str(os.path.dirname(os.path.abspath(
-        __file__))) + '/look_ups_gpt-2/top_ten_embeddings')
+        __file__))) + '/data/top_ten_embeddings')
     #model_name = '774M'
     #models_dir = str(os.path.dirname(
     #    os.path.abspath(__file__))) + '/../GPT2/gpt-2/models'
@@ -341,7 +341,7 @@ def related_words(enc):
 def Harry_sentences_no_capital(counter, Sent_num):
 
     harry_dir = str(os.path.dirname(os.path.abspath(__file__))
-                    ) + '/look_ups_gpt-2/words_fmri.npy'
+                    ) + '/data/words_fmri.npy'
     namelist = ['Harry', 'Ron', 'Malfoy', 'Neville', 'Dumbledore',
                 'Hermione', 'Potter', 'Weasley.', ' Potter',  'Potter,', 'broomstick', ' Potter,']
     harry = np.load(harry_dir)
@@ -406,16 +406,16 @@ def lexical_diversity(text):
     return len(text) / len(set(text))
 
 # A score function for how good our sentense is
-def evaluate_quality(sequence, word, related_count, perplexity, guide):
+def evaluate_quality(sequence, word, related_count, perplexity, guide, temp):
     # we aim for one ocurance of the word,
     # Or two ocurances of related words
     # and low perplexity
     w_1 = 1
-    w_2 = 2
     w_3 = 0.001   # Changed from 0.01!
+    c_star = 2
 
     if(word == ""):
-        quality_score = math.exp(-(w_1*(3) + w_3*perplexity))
+        quality_score = math.exp(-(w_1*(c_star) + w_3*perplexity))
         return quality_score
 
     quality_score = 0
@@ -430,8 +430,9 @@ def evaluate_quality(sequence, word, related_count, perplexity, guide):
     #                               w_2 * abs(related_count - 2) +
     #                               w_3*perplexity))
     else:
-        quality_score = math.exp(-(w_1*(2) + w_3*perplexity))
+        quality_score = math.exp(-(w_1*(c_star) + w_3*perplexity))
 
+    quality_score = quality_score/temp
     #print("txt, quality_score, word_count, rel_count, ppl", sequence, quality_score, word_count, related_count, perplexity)
 
     #lex_div = lexical_diversity(sequence)
