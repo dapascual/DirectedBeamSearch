@@ -71,17 +71,20 @@ def top_k_top_p_filtering(logits, top_k=0, top_p=0.0, filter_value=-float('Inf')
         
     return logits
 
-def sample_sentence(text, this_sequence, tokenizer, model, guide_word_stem, glove_word, converter_table, weight, guide=False, prev_proba=1, top_k=0, top_p=0.9, temperature=1.):
+def sample_sentence(text, this_sequence, tokenizer, model, guide_word_stem, glove_word, converter_table, weight, guide=False, prev_proba=1, top_k=0, top_p=0.9, temperature=1., only_max=False):
     ## GPT2 - generate logits
     indexed_tokens = tokenizer.encode(text)
     indexed_this_seq = tokenizer.encode(this_sequence)
     tokens_tensor = torch.tensor([indexed_tokens])
     tokens_tensor = tokens_tensor.to('cuda')
-    model.to('cuda')
+    #model.to('cuda')
     
     # Predict all tokens
     #with torch.no_grad():
     outputs = model(tokens_tensor)
+    del tokens_tensor
+    torch.cuda.empty_cache()
+
     logits = outputs.logits
     logits = logits[0, -1, :]/ temperature
     proba = F.softmax(logits, dim=-1)        
@@ -91,8 +94,12 @@ def sample_sentence(text, this_sequence, tokenizer, model, guide_word_stem, glov
     if guide == True:
         sim = cosine_similarity(np.reshape(
                     glove_word, (1, -1)), converter_table)
-                    
-        sim = np.clip(np.squeeze(sim), a_min=0, a_max=None) #tf.square(sim)  
+        if only_max == True:
+            sim_aux = np.zeros_like(sim)
+            sim_aux[0,sim.argmax()] = sim.max()
+            sim = sim_aux
+        else:
+            sim = np.clip(np.squeeze(sim), a_min=0, a_max=None) #tf.square(sim)  
         sim = sim*sim
         #weight_ = 2*torch.max(logits[torch.isfinite(logits)]).item()        
         logits = logits + torch.tensor(sim*weight).cuda()
@@ -120,11 +127,14 @@ def sample_sentence_noguide(text, this_sequence, tokenizer, model, prev_proba=1,
     indexed_this_seq = tokenizer.encode(this_sequence)
     tokens_tensor = torch.tensor([indexed_tokens])
     tokens_tensor = tokens_tensor.to('cuda')
-    model.to('cuda')
-    
+    #model.to('cuda')
+
     # Predict all tokens
     #with torch.no_grad():
     outputs = model(tokens_tensor)
+    del tokens_tensor
+    torch.cuda.empty_cache()
+
     logits = outputs.logits
     logits = logits[0, -1, :]/ temperature
     proba = F.softmax(logits, dim=-1)        
@@ -158,11 +168,12 @@ def conditional_language_generation(
     number_of_generated_sentences = 20,
     number_of_words_per_sentence = 5,
     number_of_beams = 3,
-    number_keywords = 5,
     word_index=0,
     save_path='dummy.txt',
     sample=False,
-    temp=1. ##TODO: in quality score
+    temp=1., ##TODO: in quality score
+    only_max = False,
+    key2article = False
 ):
     """
     Interactively run the model
@@ -197,7 +208,7 @@ def conditional_language_generation(
     model = GPT2LMHeadModel.from_pretrained('gpt2-large')
     tokenizer = GPT2Tokenizer.from_pretrained('gpt2-large')
     model.eval()
-    
+    model.to('cuda')
 ###################################
 	## Load words
 
@@ -207,16 +218,36 @@ def conditional_language_generation(
     #    __file__))) + '/look_ups_gpt-2/word_sets_num.npy')
     
     # line contains all sets of 5 worlds in it
-    file1 = open(str(os.path.dirname(os.path.abspath(__file__))) +
+    if key2article:
+        file1 = open(str(os.path.dirname(os.path.abspath(__file__))) +
+                 "/data/keyword_to_articles/test_" + str(word_index) + ".txt", "r+")
+
+        line = file1.readlines()
+        keywords = list(line[2].strip().split(", "))
+        print("Keywords: ", keywords)
+
+        keywords_glove = np.load(str(os.path.dirname(
+            os.path.abspath(__file__))) + '/data/keyword_to_articles/test_' + str(word_index) + '.npy')# + str(word_index) + '.npy') 
+        in_text = line[1].split()[:30]
+        print(in_text)
+        full_text = [' '.join(in_text)] * number_of_beams #"I think"
+        print("Full text: ", full_text)
+
+
+    else:
+        file1 = open(str(os.path.dirname(os.path.abspath(__file__))) +
                  "/data/50_keywordsets_eval/word_sets.txt", "r+")
 
-    line = file1.readlines()
-    keywords = list(line[word_index].strip().split(", "))
-    print("Keywords: ", keywords)
+        line = file1.readlines()
+        keywords = list(line[word_index].strip().split(", "))
+        print("Keywords: ", keywords)
 
-    keywords_glove = np.load(str(os.path.dirname(
-        os.path.abspath(__file__))) + '/data/50_keywordsets_eval/set_' + str(word_index) + '.npy') 
+        keywords_glove = np.load(str(os.path.dirname(
+            os.path.abspath(__file__))) + '/data/50_keywordsets_eval/set_' + str(word_index) + '.npy') 
+        full_text = ["It is"] * number_of_beams #"I think"
 
+    number_keywords = len(keywords)
+    print("N keywords: ", number_keywords)
 ###################################
     from datetime import datetime
     now = datetime.now()
@@ -239,7 +270,7 @@ def conditional_language_generation(
     success_length =  [0]*number_of_beams
     online_probability = [1]*number_of_beams
     guide = [True]*number_of_beams
-    full_text = ["It is"] * number_of_beams #"I think"
+    #full_text = ["It is"] * number_of_beams #"I think"
     
     for k in range(number_of_generated_sentences):      
 
@@ -263,7 +294,7 @@ def conditional_language_generation(
                     guide_next = True    
                     for j in range(number_of_words_per_sentence):
                         context, guide_next, proba, this_sequence = sample_sentence(context, this_sequence, tokenizer, model, 
-                                guide_word_stem, keywords_glove[guidance_index[b]], converter_table, weight, guide_next, proba)
+                                guide_word_stem, keywords_glove[guidance_index[b]], converter_table, weight, guide_next, proba, only_max=only_max)
                 else:   # Dont't guide                    
                     for j in range(number_of_words_per_sentence):
                         context, proba, this_sequence = sample_sentence_noguide(context, this_sequence, tokenizer, model, prev_proba=proba)
@@ -405,6 +436,9 @@ def conditional_language_generation(
     text_file.write("\n\n")
 
     text_file.close()
+    
+    del model
+    torch.cuda.empty_cache()
 
     print("END: ", keywords)
 
@@ -416,14 +450,16 @@ if __name__ == '__main__':
     # Get constant defined in run_gpt2.sh
     parser = argparse.ArgumentParser()
     parser.add_argument('-weight', type=float, default=20)
-    parser.add_argument('-n_concurrent_sentences', type=int, default=4)
-    parser.add_argument('-n_generated_sentences', type=int, default=10)
+    parser.add_argument('-n_concurrent_sentences', type=int, default=5)
+    parser.add_argument('-n_generated_sentences', type=int, default=18)
     parser.add_argument('-n_words_per_sentence', type=int, default=5)
     parser.add_argument('-n_beams', type=int, default=5)
     parser.add_argument('-n_word_files', type=int, default=50)
     parser.add_argument('-n_repetitions', type=int, default=1)
     parser.add_argument('-sample', type=bool, default=False)
     parser.add_argument('-temperature', type=float, default=1.)
+    parser.add_argument('-only_max', type=bool, default=False)
+    parser.add_argument('-key2article', type=bool, default=False)
     args = parser.parse_args()
 
     word_set_index = 0
@@ -436,36 +472,73 @@ if __name__ == '__main__':
     sample = args.sample
     n_repetitions = args.n_repetitions
     temperature = args.temperature
+    only_max = args.only_max
+    key2article = args.key2article
 
     if sample == False:
         save_file = 'deterministic_result_w_'+str(weight)+'_nBeams_'+str(number_of_beams)+'_nConcSent_'+str(number_of_concurrent_sentences)+'_nGenSent_'+str(number_of_generated_sentences)+'_nWordsPerSent_'+str(number_of_words_per_sentence)+'_temperature_'+str(temperature)
     else:
         save_file = 'sample_result_w_'+str(weight)+'_nBeams_'+str(number_of_beams)+'_nConcSent_'+str(number_of_concurrent_sentences)+'_nGenSent_'+str(number_of_generated_sentences)+'_nWordsPerSent_'+str(number_of_words_per_sentence)+'_temperature_'+str(temperature)
 
-    sub_folder = '50_keywordsets_eval/'
+    if only_max == True:
+        save_file = 'ONLYMAX_result_w_'+str(weight)+'_nBeams_'+str(number_of_beams)+'_nConcSent_'+str(number_of_concurrent_sentences)+'_nGenSent_'+str(number_of_generated_sentences)+'_nWordsPerSent_'+str(number_of_words_per_sentence)+'_temperature_'+str(temperature)
+
+    if key2article:
+        sub_folder = 'keyword_to_articles/'
+    else:
+        sub_folder = '50_keywordsets_eval/'
     save_path = 'results/' + sub_folder + save_file
     #save_path = 'results/'
+    
+    print("Save path: ", save_path)
 
     all_results = np.zeros([n_word_files, n_repetitions, 4])
     # For every concept word set
-    for j in range(n_word_files):
-        for i in range(n_repetitions):
-            # Interact model => generate sentenses and evaluate them
-            results = conditional_language_generation(constant=weight,
-                                                      number_of_concurrent_sentences=number_of_concurrent_sentences,
-                                                      number_of_generated_sentences=number_of_generated_sentences,
-                                                      number_of_words_per_sentence=number_of_words_per_sentence,
-                                                      number_of_beams = number_of_beams,
-                                                      word_index=j,  
-                                                      save_path=save_path, 
-                                                      sample=sample,
-                                                      temp=temperature        
-                                                      )
-            all_results[j][i][0] = results["gpt_1_perplexity"]
-            all_results[j][i][1] = results["time_needed"]
-            all_results[j][i][2] = results["success_rate"]
-            all_results[j][i][3] = results["success_length"]        
-    
+    if not key2article:
+        for j in range(n_word_files):
+            for i in range(n_repetitions):
+                # Interact model => generate sentenses and evaluate them
+                results = conditional_language_generation(constant=weight,
+                                                          number_of_concurrent_sentences=number_of_concurrent_sentences,
+                                                          number_of_generated_sentences=number_of_generated_sentences,
+                                                          number_of_words_per_sentence=number_of_words_per_sentence,
+                                                          number_of_beams = number_of_beams,
+                                                          word_index=j,  
+                                                          save_path=save_path, 
+                                                          sample=sample,
+                                                          temp=temperature,
+                                                          only_max=only_max,
+                                                          key2article=False
+                                                          )
+                all_results[j][i][0] = results["gpt_1_perplexity"]
+                all_results[j][i][1] = results["time_needed"]
+                all_results[j][i][2] = results["success_rate"]
+                all_results[j][i][3] = results["success_length"]        
+
+    else:
+        n_gen_sent = [16, 15, 32, 34, 35, 36, 37, 41, 45, 34]
+        c = 0
+        for j in [4, 5, 8, 9, 10, 12, 13, 14, 15, 16]:
+            for i in range(n_repetitions):
+                # Interact model => generate sentenses and evaluate them
+                results = conditional_language_generation(constant=weight,
+                                                          number_of_concurrent_sentences=number_of_concurrent_sentences,
+                                                          number_of_generated_sentences=n_gen_sent[c],
+                                                          number_of_words_per_sentence=number_of_words_per_sentence,
+                                                          number_of_beams = number_of_beams,
+                                                          word_index=j,  
+                                                          save_path=save_path, 
+                                                          sample=sample,
+                                                          temp=temperature,
+                                                          only_max=only_max,
+                                                          key2article=True
+                                                          )
+                all_results[c][i][0] = results["gpt_1_perplexity"]
+                all_results[c][i][1] = results["time_needed"]
+                all_results[c][i][2] = results["success_rate"]
+                all_results[c][i][3] = results["success_length"]    
+            c=c+1
+        
     np.save(save_path, all_results)
 
     
