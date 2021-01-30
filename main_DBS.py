@@ -5,7 +5,7 @@ import os
 import numpy as np
 import scipy.io as sio
 import argparse
-os.environ['TRANSFORMERS_CACHE']='./transformer_models'
+os.environ['TRANSFORMERS_CACHE']='./transformer_models'  # Work-around to avoid memory problems in server, comment out depending on memory availability
 
 from transformers import GPT2Tokenizer, GPT2LMHeadModel
 import torch.nn.functional as F
@@ -23,19 +23,10 @@ porter = PorterStemmer()
 #word_vectors = api.load("glove-wiki-gigaword-300")
 
 
+if not os.path.exists(str(os.path.dirname(os.path.abspath(__file__))) + '/data/converter_table_glove.npy'):
+    print("Generating table of cosine distances...")
+    converter_table_glove()
 
-
-
-# Generate look_ups_gpt-2, containing
-# words_fmri,
-# Wordsets,
-# Top Ten embedings,
-# Converter table etc
-
-print("Before")
-if not files_exist():
-    generate_look_ups(word_vectors)         ### WATCH OUT WITH CONVERT TABLE GLOVE
-print("After")
 
 
 
@@ -72,6 +63,8 @@ def top_k_top_p_filtering(logits, top_k=0, top_p=0.0, filter_value=-float('Inf')
     return logits
 
 def sample_sentence(text, this_sequence, tokenizer, model, guide_word_stem, glove_word, converter_table, weight, guide=False, prev_proba=1, top_k=0, top_p=0.9, temperature=1., only_max=False):
+    """ Samples the next word of the sequence with logit modification (guidance)
+    """    
     ## GPT2 - generate logits
     indexed_tokens = tokenizer.encode(text)
     indexed_this_seq = tokenizer.encode(this_sequence)
@@ -89,7 +82,6 @@ def sample_sentence(text, this_sequence, tokenizer, model, guide_word_stem, glov
     logits = logits[0, -1, :]/ temperature
     proba = F.softmax(logits, dim=-1)        
     logits = top_k_top_p_filtering(logits, top_k=top_k, top_p=top_p)
-    #print("Max logits after sampling: ", logits.shape, torch.max(logits))
     # Calculate cosine similarity
     if guide == True:
         sim = cosine_similarity(np.reshape(
@@ -100,12 +92,11 @@ def sample_sentence(text, this_sequence, tokenizer, model, guide_word_stem, glov
             sim = sim_aux
         else:
             sim = np.clip(np.squeeze(sim), a_min=0, a_max=None) #tf.square(sim)  
-        sim = sim*sim
-        #weight_ = 2*torch.max(logits[torch.isfinite(logits)]).item()        
+        sim = sim*sim     ###
+
         logits = logits + torch.tensor(sim*weight).cuda()
 
     logits = F.softmax(logits, dim=-1) 
-    #logits = F.softmax(logits, dim=-1)
     predicted_index = torch.multinomial(logits, 1).item()
     
     predicted_text = tokenizer.decode(indexed_tokens + [predicted_index])
@@ -122,6 +113,8 @@ def sample_sentence(text, this_sequence, tokenizer, model, guide_word_stem, glov
     return predicted_text, guide_next, prev_proba*proba[predicted_index], this_sequence
 
 def sample_sentence_noguide(text, this_sequence, tokenizer, model, prev_proba=1, top_k=0, top_p=0.9, temperature=1.):
+    """ Samples the next word of the sequence without logit modification (guidance
+    """
     ## GPT2 - generate logits
     indexed_tokens = tokenizer.encode(text)
     indexed_this_seq = tokenizer.encode(this_sequence)
@@ -130,7 +123,6 @@ def sample_sentence_noguide(text, this_sequence, tokenizer, model, prev_proba=1,
     #model.to('cuda')
 
     # Predict all tokens
-    #with torch.no_grad():
     outputs = model(tokens_tensor)
     del tokens_tensor
     torch.cuda.empty_cache()
@@ -140,10 +132,8 @@ def sample_sentence_noguide(text, this_sequence, tokenizer, model, prev_proba=1,
     proba = F.softmax(logits, dim=-1)        
     logits = top_k_top_p_filtering(logits, top_k=top_k, top_p=top_p)
     #print("Max logits after sampling: ", logits.shape, torch.max(logits))
-    # Calculate cosine similarity
     
     logits = F.softmax(logits, dim=-1) 
-    #logits = F.softmax(logits, dim=-1)
     predicted_index = torch.multinomial(logits, 1).item()
     
     predicted_text = tokenizer.decode(indexed_tokens + [predicted_index])
@@ -171,12 +161,13 @@ def conditional_language_generation(
     word_index=0,
     save_path='dummy.txt',
     sample=False,
-    temp=1., ##TODO: in quality score
+    temp=1.,
     only_max = False,
-    key2article = False
+    key2article = False,
+    ROC=False
 ):
     """
-    Interactively run the model
+    Main function for conditional language generation
     :model_name=124M : String, which model to use
     :seed=None : Integer seed for random number generators, fix seed to reproduce
      results
@@ -204,7 +195,7 @@ def conditional_language_generation(
 
     total_words = number_of_words_per_sentence*number_of_generated_sentences
 
-    #GPT2  
+    #Define model: here GPT2 large from the Hugging Face
     model = GPT2LMHeadModel.from_pretrained('gpt2-large')
     tokenizer = GPT2Tokenizer.from_pretrained('gpt2-large')
     model.eval()
@@ -214,11 +205,9 @@ def conditional_language_generation(
 
     length = number_of_words_per_sentence
 
-    #word_set = np.load(str(os.path.dirname(os.path.abspath(
-    #    __file__))) + '/look_ups_gpt-2/word_sets_num.npy')
-    
-    # line contains all sets of 5 worlds in it
+    # Define task, keyword to article, keyword to story (ROC) or keyword to phrase
     if key2article:
+        #File containing the keywords as text
         file1 = open(str(os.path.dirname(os.path.abspath(__file__))) +
                  "/data/keyword_to_articles/test_" + str(word_index) + ".txt", "r+")
 
@@ -226,15 +215,32 @@ def conditional_language_generation(
         keywords = list(line[2].strip().split(", "))
         print("Keywords: ", keywords)
 
+        #File containing the encoded keywords
         keywords_glove = np.load(str(os.path.dirname(
-            os.path.abspath(__file__))) + '/data/keyword_to_articles/test_' + str(word_index) + '.npy')# + str(word_index) + '.npy') 
+            os.path.abspath(__file__))) + '/data/keyword_to_articles/test_' + str(word_index) + '.npy')
         in_text = line[1].split()[:30]
         print(in_text)
-        full_text = [' '.join(in_text)] * number_of_beams #"I think"
+        full_text = [' '.join(in_text)] * number_of_beams 
         print("Full text: ", full_text)
 
+    elif ROC:
+        #File containing the keywords as text
+        file1 = open(str(os.path.dirname(os.path.abspath(__file__))) +
+                 "/data/ROC/ROCStories_50_storylines_500_0.txt", "r+")
+
+        line = file1.readlines()
+        keywords = list(line[word_index].strip().split(", "))
+        print("Keywords: ", keywords)
+
+        #File containing the encoded keywords
+        keywords_glove = np.load(str(os.path.dirname(
+            os.path.abspath(__file__))) + '/data/ROC/set_' + str(word_index) + '.npy') 
+
+        # Change full_text to desired initial context
+        full_text = ["It is"] * number_of_beams #"I think"
 
     else:
+        #File containing the keywords as text
         file1 = open(str(os.path.dirname(os.path.abspath(__file__))) +
                  "/data/50_keywordsets_eval/word_sets.txt", "r+")
 
@@ -242,24 +248,24 @@ def conditional_language_generation(
         keywords = list(line[word_index].strip().split(", "))
         print("Keywords: ", keywords)
 
+        #File containing the encoded keywords
         keywords_glove = np.load(str(os.path.dirname(
             os.path.abspath(__file__))) + '/data/50_keywordsets_eval/set_' + str(word_index) + '.npy') 
+        
+        # Change full_text to desired initial context
         full_text = ["It is"] * number_of_beams #"I think"
 
     number_keywords = len(keywords)
     print("N keywords: ", number_keywords)
 ###################################
     from datetime import datetime
+    # To measure computation time
     now = datetime.now()
-    #date_time = now.strftime("%Y-%m-%d_%H:%M:%S")
+    # File to save results as .txt
     text_file = open(save_path + '.txt', 'a+', encoding='utf8')
-#str(os.path.dirname(os.path.abspath(__file__))) +"/results/result_subsequences_"+date_time+".txt", "a+", encoding='utf8')
-    
-    
-
+       
     # prepare variables...
     np.random.seed(seed)
-
     weight = constant
     converter_table = np.load(str(os.path.dirname(
         os.path.abspath(__file__))) + '/data/converter_table_glove.npy')  
@@ -270,7 +276,6 @@ def conditional_language_generation(
     success_length =  [0]*number_of_beams
     online_probability = [1]*number_of_beams
     guide = [True]*number_of_beams
-    #full_text = ["It is"] * number_of_beams #"I think"
     
     for k in range(number_of_generated_sentences):      
 
@@ -278,12 +283,14 @@ def conditional_language_generation(
         result_subsequences = []        
         for b in range(number_of_beams):
 
+            # Reset variables:
             beam_text = full_text[b]
             guidance_word = keywords[guidance_index[b]]
             print("Guidance: ", str(guidance_index[b]), guidance_word)
             guide_word_stem = porter.stem(guidance_word)
             
             perplexities = np.zeros((number_of_concurrent_sentences))
+
 ####################################### Generation loop ################################################
             for i in range(number_of_concurrent_sentences):
                 
@@ -298,16 +305,16 @@ def conditional_language_generation(
                 else:   # Dont't guide                    
                     for j in range(number_of_words_per_sentence):
                         context, proba, this_sequence = sample_sentence_noguide(context, this_sequence, tokenizer, model, prev_proba=proba)
-                        #context, _, proba, this_sequence = sample_sentence(context, this_sequence, tokenizer, model, 
-                        #        "", None, converter_table, weight, False, proba)
-                    
+                        
                 proba = proba.item()
                 perplexity = np.power(proba, (-1/length))
                 
                 counter_sim = 0
                 quality_score, word_count = evaluate_quality(this_sequence, guidance_word, counter_sim, perplexity, guide[b], temp)
-                print("Beam, Guidance: ", b, guidance_word, str(guidance_index[b]), guide[b])
-                print("txt, quality, wordC, ppl: ", this_sequence, cum_quality_score[b]+quality_score, word_count, perplexity)   
+
+                # DEBUG:
+                #print("Beam, Guidance: ", b, guidance_word, str(guidance_index[b]), guide[b])
+                #print("txt, quality, wordC, ppl: ", this_sequence, cum_quality_score[b]+quality_score, word_count, perplexity)   
 
                 result_subsequences.append(
                         [context, cum_quality_score[b]+quality_score, word_count, perplexity, proba, guidance_index[b], guide[b]])
@@ -315,23 +322,25 @@ def conditional_language_generation(
                 perplexities[i] = perplexity            
 
 ########################################################################################################
+        # Deterministic DBS
         if not sample:
             result_subsequences_sorted = sorted(
                 result_subsequences, key=lambda a_entry: a_entry[1], reverse=True)      
+        # Sample DBS
         else:
             scores = torch.tensor([a_entry[1] for a_entry in result_subsequences])
-            print("Scores: ", scores)
+            #print("Scores: ", scores)
             soft_scores = F.softmax(scores, dim=-1) 
-            print("Soft scores: ", soft_scores)
+            #print("Soft scores: ", soft_scores)
             sampled_indeces = torch.multinomial(soft_scores, len(result_subsequences), replacement=False).tolist()
-            print("Sampled indeces: ", sampled_indeces)
-            result_subsequences_sorted = [result_subsequences[i] for i in sampled_indeces] #[element for _, element in sorted(zip(sampled_indeces, result_subsequences))]
+            #print("Sampled indeces: ", sampled_indeces)
+            result_subsequences_sorted = [result_subsequences[i] for i in sampled_indeces]
             print(result_subsequences_sorted[0])
             del sampled_indeces
             del soft_scores
             torch.cuda.empty_cache()
 
-
+        # Select Beams
         for b in range(number_of_beams):
             full_text[b] = result_subsequences_sorted[b][0]
             cum_quality_score[b] = result_subsequences_sorted[b][1]
@@ -355,7 +364,8 @@ def conditional_language_generation(
             print("Current perplexity, cumulative quality: ", online_perplexity, cum_quality_score[b])        
 
                   
-        '''
+        ''' Uncomment to write all intermediate steps to .txt
+
         text_file.write("\nBest 10 next subsequences: \n")
         for result_subsequence in result_subsequences_sorted:
             text_file.write(result_subsequence[0] + "\n Perplexity:" +
@@ -367,12 +377,6 @@ def conditional_language_generation(
     #######################################
     # final evaluation
     #######################################
-    '''
-    if guidance_index[b] > 4:
-        for j in range(total_words - n_words_counter):
-            full_text, _, _, _ = sample_sentence(full_text, "", tokenizer, model, 
-                        "", None, converter_table, None, False, 1)
-    '''
     for b in range(number_of_beams):    
         if guide[b]:
             success_length[b] = 0
@@ -381,18 +385,17 @@ def conditional_language_generation(
     target_words = number_keywords
     target_count = 0
     for i in range(number_keywords):
-        #if keywords[i] in plugAndPlayText:
         if count_word_stem(keywords[i], full_text[0]) > 0:
             target_count += 1
             
     success_rate = target_count/target_words
 
-    # GPT (1) perplexity
-    gpt_1_perplexity = gpt_1_perplexity_score(full_text[0])
+    # Distil-GPT2 perplexity
+    distilGPT2_perplexity = distilGPT2_perplexity_score(full_text[0])
     print("------------------------------------------------------------------------------")
     print("FINAL TEXT: ")
     print(full_text[0])
-    print("Success rate, success length, perplexity: ", success_rate, success_length[0], gpt_1_perplexity)
+    print("Success rate, success length, perplexity: ", success_rate, success_length[0], distilGPT2_perplexity)
     # Time measurement
     end_time = time.time()
     time_needed = end_time - start_time
@@ -404,7 +407,7 @@ def conditional_language_generation(
         "final_sequence: ": full_text[0],
         "keywords": keywords,
         #"online_perplexity": online_perplexity[0],
-        "gpt_1_perplexity": gpt_1_perplexity,
+        "distilGPT2_perplexity": distilGPT2_perplexity,
         "success_rate": success_rate,
         "number_of_concurent_sentences": number_of_concurrent_sentences,
         "number_of_generated_sentences": number_of_generated_sentences,
@@ -418,7 +421,7 @@ def conditional_language_generation(
         "success_length": success_length[0]
     }
 
-    # To text file
+    # Write to text file
     text_file.write("Keywords: \n")
     for word in keywords:
         text_file.write(word + " ")
@@ -427,10 +430,8 @@ def conditional_language_generation(
 
     text_file.write("Final sequence: \n\n")
     text_file.write(full_text[0])
-    #text_file.write("\n\nperplexity: ")
-    #text_file.write(str(online_perplexity[0]))
     text_file.write("\nSuccess_rate: " + str(success_rate))
-    text_file.write("\nPerplexity: " + str(gpt_1_perplexity))
+    text_file.write("\nPerplexity: " + str(distilGPT2_perplexity))
     text_file.write("\nTime_needed: " + str(time_needed))
     text_file.write("\nSuccess_length: " + str(success_length[0]))
     text_file.write("\n\n")
@@ -460,6 +461,8 @@ if __name__ == '__main__':
     parser.add_argument('-temperature', type=float, default=1.)
     parser.add_argument('-only_max', type=bool, default=False)
     parser.add_argument('-key2article', type=bool, default=False)
+    parser.add_argument('-ROC', type=bool, default=False)
+    parser.add_argument('-file_number', type=int, default=4)
     args = parser.parse_args()
 
     word_set_index = 0
@@ -474,30 +477,38 @@ if __name__ == '__main__':
     temperature = args.temperature
     only_max = args.only_max
     key2article = args.key2article
+    ROC = args.ROC
+    file_number = args.file_number
 
+    # Deterministic or sample DBS
     if sample == False:
         save_file = 'deterministic_result_w_'+str(weight)+'_nBeams_'+str(number_of_beams)+'_nConcSent_'+str(number_of_concurrent_sentences)+'_nGenSent_'+str(number_of_generated_sentences)+'_nWordsPerSent_'+str(number_of_words_per_sentence)+'_temperature_'+str(temperature)
     else:
         save_file = 'sample_result_w_'+str(weight)+'_nBeams_'+str(number_of_beams)+'_nConcSent_'+str(number_of_concurrent_sentences)+'_nGenSent_'+str(number_of_generated_sentences)+'_nWordsPerSent_'+str(number_of_words_per_sentence)+'_temperature_'+str(temperature)
 
+    # DBS-one or not
     if only_max == True:
         save_file = 'ONLYMAX_result_w_'+str(weight)+'_nBeams_'+str(number_of_beams)+'_nConcSent_'+str(number_of_concurrent_sentences)+'_nGenSent_'+str(number_of_generated_sentences)+'_nWordsPerSent_'+str(number_of_words_per_sentence)+'_temperature_'+str(temperature)
 
+    #Task
     if key2article:
         sub_folder = 'keyword_to_articles/'
+        save_path = 'results/' + sub_folder + save_file + '_FILE_' + str(file_number)
+    elif ROC:
+        sub_folder = 'ROC/'
+        save_path = 'results/' + sub_folder + save_file
     else:
         sub_folder = '50_keywordsets_eval/'
-    save_path = 'results/' + sub_folder + save_file
+        save_path = 'results/' + sub_folder + save_file
     #save_path = 'results/'
     
     print("Save path: ", save_path)
 
     all_results = np.zeros([n_word_files, n_repetitions, 4])
     # For every concept word set
-    if not key2article:
+    if not key2article and not ROC:
         for j in range(n_word_files):
             for i in range(n_repetitions):
-                # Interact model => generate sentenses and evaluate them
                 results = conditional_language_generation(constant=weight,
                                                           number_of_concurrent_sentences=number_of_concurrent_sentences,
                                                           number_of_generated_sentences=number_of_generated_sentences,
@@ -510,20 +521,16 @@ if __name__ == '__main__':
                                                           only_max=only_max,
                                                           key2article=False
                                                           )
-                all_results[j][i][0] = results["gpt_1_perplexity"]
+                all_results[j][i][0] = results["distilGPT2_perplexity"]
                 all_results[j][i][1] = results["time_needed"]
                 all_results[j][i][2] = results["success_rate"]
-                all_results[j][i][3] = results["success_length"]        
-
-    else:
-        n_gen_sent = [16, 15, 32, 34, 35, 36, 37, 41, 45, 34]
-        c = 0
-        for j in [4, 5, 8, 9, 10, 12, 13, 14, 15, 16]:
+                all_results[j][i][3] = results["success_length"]       
+    elif ROC:
+        for j in range(n_word_files):
             for i in range(n_repetitions):
-                # Interact model => generate sentenses and evaluate them
                 results = conditional_language_generation(constant=weight,
                                                           number_of_concurrent_sentences=number_of_concurrent_sentences,
-                                                          number_of_generated_sentences=n_gen_sent[c],
+                                                          number_of_generated_sentences=number_of_generated_sentences,
                                                           number_of_words_per_sentence=number_of_words_per_sentence,
                                                           number_of_beams = number_of_beams,
                                                           word_index=j,  
@@ -531,13 +538,31 @@ if __name__ == '__main__':
                                                           sample=sample,
                                                           temp=temperature,
                                                           only_max=only_max,
-                                                          key2article=True
+                                                          key2article=False,
+                                                          ROC=True
                                                           )
-                all_results[c][i][0] = results["gpt_1_perplexity"]
-                all_results[c][i][1] = results["time_needed"]
-                all_results[c][i][2] = results["success_rate"]
-                all_results[c][i][3] = results["success_length"]    
-            c=c+1
+                all_results[j][i][0] = results["distilGPT2_perplexity"]
+                all_results[j][i][1] = results["time_needed"]
+                all_results[j][i][2] = results["success_rate"]
+                all_results[j][i][3] = results["success_length"]     
+    else:
+        for i in range(n_repetitions):
+            results = conditional_language_generation(constant=weight,
+                                                      number_of_concurrent_sentences=number_of_concurrent_sentences,
+                                                      number_of_generated_sentences=number_of_generated_sentences,
+                                                      number_of_words_per_sentence=number_of_words_per_sentence,
+                                                      number_of_beams = number_of_beams,
+                                                      word_index=file_number,  
+                                                      save_path=save_path, 
+                                                      sample=sample,
+                                                      temp=temperature,
+                                                      only_max=only_max,
+                                                      key2article=True
+                                                      )
+            all_results[0][i][0] = results["distilGPT2_perplexity"]
+            all_results[0][i][1] = results["time_needed"]
+            all_results[0][i][2] = results["success_rate"]
+            all_results[0][i][3] = results["success_length"]    
         
     np.save(save_path, all_results)
 

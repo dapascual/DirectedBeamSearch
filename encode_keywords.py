@@ -7,7 +7,10 @@ import scipy.io as sio
 import argparse
 import gensim.downloader as api
 
+
+######## Change to encode keywords for the desired task
 encode_50keywords = True
+encode_ROC = False
 encode_articles = False
 
 glove_encoder = api.load("glove-wiki-gigaword-300")
@@ -16,19 +19,39 @@ if encode_50keywords == True:
     
     file1 = open(str(os.path.dirname(os.path.abspath(__file__))) +
                  "/data/50_keywordsets_eval/word_sets.txt", "r+")
-
     lines = file1.readlines()
 
     i=0
     for line in lines:
         keywords = list(line.strip().split(", "))
         glove_words = []
+        print(keywords)
         for word in keywords:
-            print(word)
             glove = glove_encoder[word]
             glove_words.append(glove)
         save_path = str(os.path.dirname(
             os.path.abspath(__file__))) + '/data/50_keywordsets_eval/set_' +str(i) + '.npy'
+
+        np.save(save_path, glove_words)
+        i=i+1
+
+if encode_50keywords == True:
+    
+    file1 = open(str(os.path.dirname(os.path.abspath(__file__))) +
+                 "/data/ROC/ROCStories_50_storylines_500_0.txt", "r+")
+    lines = file1.readlines()
+
+    i=0
+    for line in lines:
+        keywords = list(line.strip().split(", "))
+        glove_words = []
+        print(keywords)
+        for word in keywords:
+            glove = glove_encoder[word]
+            glove_words.append(glove)
+        save_path = str(os.path.dirname(
+            os.path.abspath(__file__))) + '/data/ROC/set_' +str(i) + '.npy'
+
         np.save(save_path, glove_words)
         i=i+1
 
